@@ -65,8 +65,8 @@ while($row = mysqli_fetch_array($res)) {
     $url = "http://".$config['host'].$config['dir']."mods/".end(explode("/",$row['path']));
     $packageres = mysqli_query($oemsolder, "SELECT * FROM `mods` WHERE `id` = '".$row['mod_id']."'");
     $package = mysqli_fetch_array($packageres);
-    mysqli_query($conn,"INSERT INTO `mods` (`type`,`url`,`version`,`md5`,`filename`,`name`,`pretty_name`,`author`,`link`,`donlink`,`description`) VALUES ('mod','".$url."','".$row['version']."','".$row['md5']."','".$_POST['solder-orig']."/public/repo/mods/".$package['name']."-".$row['version'].".zip','".$package['name']."','".$package['name']."','".$package['author']."','".$package['link']."','".$package['link']."','".$package['description']."')");
-    copy($_POST['solder-orig']."/public/repo/mods/".$package['name']."-".$row['version'].".zip", dirname(dirname(__FILE__))."/mods/".end(explode("/",$row['path'])));
+    mysqli_query($conn,"INSERT INTO `mods` (`type`,`url`,`version`,`md5`,`filename`,`name`,`pretty_name`,`author`,`link`,`donlink`,`description`) VALUES ('mod','".$url."','".$row['version']."','".$row['md5']."','".$package['name']."/".$package['name']."-".$row['version'].".zip','".$package['name']."','".$package['name']."','".$package['author']."','".$package['link']."','".$package['link']."','".$package['description']."')");
+    copy($_POST['solder-orig'].$package['name']."/".$package['name']."-".$row['version'].".zip", dirname(dirname(__FILE__))."/mods/".end(explode("/",$package['name']."/".$package['name']."-".$row['version'].".zip")));
 }
 // ----- BUILD_RELEASE ----- \\
 $res = mysqli_query($oemsolder, "SELECT * FROM `builds`");

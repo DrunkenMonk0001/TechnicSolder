@@ -963,7 +963,7 @@ if (!isset($_SESSION['user'])&&!uri("/login")) {
                         </div>
                         <p id="errtext"></p>
                         <div id="migrating" style="display:none">
-                            <input type="text" class="form-control" id="origdir" placeholder="Path to original solder install directory (ex. /var/www/solder)"><br>
+                            <input type="text" class="form-control" id="origdir" placeholder="Path to Solder Mod repo directory (ex. /var/www/TechnicSolder/public/repo/mods/) include trailing /!"><br>
                             <button class="btn btn-primary" id="submitmigration">Start Migration</button>
                         </div>
                         <script type="text/javascript">
