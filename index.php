@@ -143,6 +143,7 @@ if (!isset($_SESSION['user'])&&!uri("/login")) {
                 display: block;
                 min-height: 165px;
                 overflow: auto;
+				height: calc(100vh - 48px);
             }
             .nav-tabs .nav-item {
                 width:102%
