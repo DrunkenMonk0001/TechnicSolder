@@ -1,170 +1,919 @@
 <?php
-/*
-TOML Parser
-Super inefficient, but gets the job done.
-Limitation: only gets the first dependency. TODO: split dependency.* into it's own array, and stuff the * into their own id within dependency to prevent overwrite.
 
-MIT License, see LICENSE file, with the difference of:
-Copyright 2021 Henry Gross-Hellsen
-*/
-function p1($inputToml) {
-    //remove commented lines
-    $lines=array();
+class Toml {
+	public $data = [];
+	private $tokenGen = null;
+
+	public function __construct(string $toml) {
+		//file_put_contents('filename2.txt', print_r($toml, true));
+		$toml = $this->cleanToml($toml);
+
+		$this->processToml($toml);
+		$this->tokenGen = null;
+	}
+
+	private function cleanToml($toml) {
+		$toml = str_replace(["\r\n", "\n\r"], "\n", $toml);
+		$toml = trim($toml);
+
+		return $toml;
+	}
+
+	private function processToml($toml) {
+		$this->tokenGen = $this->tokenizeToml($toml);
+
+		try {
+			$this->readTable([]);
+		}
+		catch (Exception $e) {
+			$msg = $e->getMessage();
+			$offset = $e->getCode();
+			$lines = explode("\n", $toml);
+
+			$line = 0;
+			$col = 0;
+			$txt = '';
+
+			if ($offset == 0) {
+				if ($this->tokenGen->valid()) {
+					$token = $this->tokenGen->current();
+					$offset = $token['offset'];
+				}
+				else {
+					$offset = strlen($toml);
+				}
+			}
+
+			if ($offset >= 0) {
+				$colCnt = 0;
+				foreach ($lines as $ndx => $str) {
+					$colCnt += strlen($str);
+	
+					if ($colCnt >= $offset) {
+						$line = $ndx + 1;
+						$col = $offset - ($colCnt - strlen($str)) + 1;
+						if (isset($toml[$offset])) {
+							$txt = $toml[$offset];
+						}
+						break;
+					}
+	
+					$colCnt++;
+				}
+			}
+
+			if (!$msg) {
+				if (!$this->tokenGen->valid()) {
+					$msg = 'Unexpected EOF';
+				}
+				else {
+					$txt = str_replace(["\n", "\t"], ["\\n", "\\t"], $txt);
+					$msg = "Unexpected character '{$txt}'";
+				}
+			}
+
+			if ($offset >= 0) {
+				$msg .= " at line {$line} and column {$col}";
+			}
+
+			throw new Exception($msg);
+		}
+	}
+
+	/* Process Token Helpers */
+	private function readTable($path, $arrNdx = false) {
+		$key = false;
+		$value = false;
+		$lineClear = true;
+		$valuePath = $path;
+		$definedChildTables = [];
+
+		if ($arrNdx !== false) {
+			$valuePath[] = $arrNdx;
+			$this->setKeyValueWithPath($this->data, $valuePath, []);
+		}
+
+		while ($this->tokenGen->valid()) {
+			$token = $this->tokenGen->current();
+
+			if ($token['txt'] == "\n") {
+				$this->tokenGen->next();
+				$lineClear = true;
+				continue;
+			}
+
+			if (!$lineClear) {
+				throw new Exception();
+			}
+
+			if ($token['type'] == '[') {
+				$tableType = $token['txt'];
+				$this->tokenGen->next();
+				$token = $this->tokenGen->current();
+				$definitionOffset = $token['offset'];
+				$newPath = $this->readPath();
+				$token = $this->tokenGen->current();
+				if ($token['type'] != ']' || strlen($token['txt']) != strlen($tableType)) {
+					throw new Exception();
+				}
+				$this->tokenGen->next();
+				if (!$this->tokenGen->valid()) {
+					return [null, null, $definitionOffset];
+				}
+				$token = $this->tokenGen->current();
+				if ($token['txt'] != "\n") {
+					throw new Exception();
+				}
+
+				while ($newPath) {
+					if ($newPath == $path) {
+						if (($arrNdx !== false) != ($tableType == '[[')) {
+							$fullPath = implode('.', array_map(function($item) {
+								return '"' . $item . '"';
+							}, $path));
+							throw new Exception("You can not redefine {$fullPath}", $definitionOffset);
+						}
+
+						return [$newPath, $tableType, $definitionOffset];
+					}
+					elseif (array_slice($newPath, 0, count($path)) != $path) {
+						return [$newPath, $tableType, $definitionOffset];
+					}
+					elseif ($arrNdx !== false) {
+						$newPath = array_merge($valuePath, array_slice($newPath, count($path)));
+					}
+
+					$tableArrNdx = false;
+					if ($tableType == '[[') {
+						$value = $this->getValueWithPath($this->data, $newPath);
+						if (is_null($value)) {
+							$tableArrNdx = 0;
+						}
+						else {
+							$tableArrNdx = count($value);
+						}
+					}
+
+					$fullPath = implode('.', array_map(function($item) {
+						return '"' . $item . '"';
+					}, $newPath));
+
+					if ($tableArrNdx !== false) {
+						$fullPath .= ".\"{$tableArrNdx}\"";
+					}
+
+					if (in_array($fullPath, $definedChildTables)) {
+						throw new Exception('Tables must be defined all in one place', $definitionOffset);
+					}
+					
+					$definedChildTables[] = $fullPath;
+
+					list($newPath, $tableType, $definitionOffset) = $this->readTable($newPath, $tableArrNdx);
+				}
+
+				return [null, null, null];
+			}
+
+			$keyToken = $this->tokenGen->current();
+
+			$key = $this->readPath();
+			$token = $this->tokenGen->current();
+			if ($token['txt'] != '=') {
+				throw new Exception();
+			}
+			$this->tokenGen->next();
+			$value = $this->readValue();
+
+			// Set value
+			$this->setKeyValueWithPath($this->data, array_merge($valuePath, $key), $value);
+			$lineClear = false;
+		}
+
+		return [null, null, null];
+	}
+
+	private function readPath() {
+		$path = [];
+		$string = '';
+		$needDelim = false;
+		$needPart = true;
+
+		while ($this->tokenGen->valid()) {
+			$token = $this->tokenGen->current();
+
+			if ($token['txt'] == '.') {
+				if ($string) {
+					$path[] = $string;
+					$string = '';
+				}
+				else {
+					throw new Exception();
+				}
+
+				$needDelim = false;
+			}
+			else {
+				if ($token['type'] == '"' || $token['type'] == "'") {
+					if ($needDelim) {
+						throw new Exception();
+					}
+
+					$path[] = $this->readString();
+					$needDelim = true;
+					$needPart = false;
+					continue;
+				}
+				elseif ($token['type'] == 'l' || $token['type'] == 'd' || $token['txt'] == '_') {
+					if ($needDelim) {
+						throw new Exception();
+					}
+
+					$string .= $token['txt'];
+					$needPart = false;
+				}
+				else {
+					if ($needPart) {
+						throw new Exception();
+					}
+
+					if ($string !== '') {
+						$path[] = $string;
+					}
+					return $path;
+				}
+			}
+
+			$this->tokenGen->next();
+		}
+
+		throw new Exception();
+	}
+
+	private function readValue() {
+		if (!$this->tokenGen->valid()) {
+			throw new Exception();
+		}
+
+		$token = $this->tokenGen->current();
+
+		if ($token['type'] == '"' || $token['type'] == "'") {
+			return $this->readString();
+		}
+		elseif ($token['txt'] == '{') {
+			return $this->readInlineTable();
+		}
+		elseif ($token['txt'] == '[') {
+			return $this->readArray();
+		}
+		else {
+			$str = '';
+			$startOffset = $token['offset'];
+
+			while (strpos(self::VALUE_TERMINATORS, $token['txt']) === false) {
+				$str .= $token['txt'];
+				$this->tokenGen->next();
+				if (!$this->tokenGen->valid()) {
+					break;
+				}
+				$token = $this->tokenGen->current();
+			}
+
+			// What is it?
+			if ($str == '') {
+				throw new Exception();
+			}
+
+			if ($str == 'true') {
+				return true;
+			}
+			elseif ($str == 'false') {
+				return false;
+			}
+			elseif (preg_match(self::INT_REGEX, $str, $matches)) {
+				unset($matches[0]);
+				$matches = array_filter($matches, function($item) {
+					return $item != '';
+				});
+				if (count($matches) == 1) {
+					array_unshift($matches, '');
+				}
+				$matches = array_values($matches);
+
+				$ndx = strpos($matches[1], '__');
+				if ($ndx !== false) {
+					throw new Exception('Integers with underscores cannot have consecutive underscores', $startOffset + $ndx + strlen($matches[0]));
+				}
+
+				if ($matches[1][0] == '_') {
+					throw new Exception('Integers with underscores must have a digit on both sides', $startOffset);
+				}
+				elseif ($matches[1][strlen($matches[1]) - 1] == '_') {
+					throw new Exception('Integers with underscores must have a digit on both sides', $startOffset + strlen($matches[1]) - 1 + strlen($matches[0]));
+				}
+
+				$matches[1] = str_replace('_', '', $matches[1]);
+
+				switch ($matches[0]) {
+					case '':
+					case '+':
+					case '-':
+						$val = "{$matches[0]}{$matches[1]}";
+						break;
+					case '0x':
+						$val = base_convert($matches[1], 16, 10);
+						break;
+					case '0o':
+						$val = base_convert($matches[1], 8, 10);
+						break;
+					case '0b':
+						$val = base_convert($matches[1], 2, 10);
+						break;
+					default:
+						throw new Exception('Unexpected prefix on integer', $startOffset);
+				}
+
+				return intval($val);
+			}
+			elseif (preg_match(self::FLOAT_REGEX, $str, $matches)) {
+				if (empty($matches[4])) {
+					if ($matches[1][0] == '_') {
+						throw new Exception('Floats with underscores must have a digit on both sides', $startOffset);
+					}
+					elseif ($matches[1][strlen($matches[1]) - 1] == '_') {
+						throw new Exception('Floats with underscores must have a digit on both sides', $startOffset + strlen($matches[1]));
+					}
+
+					$matches[1] = str_replace('_', '', $matches[1]);
+
+					$val = floatval($matches[1]);
+					if (!empty($matches[2])) {
+						if ($matches[2][0] == '_') {
+							throw new Exception('Floats with underscores must have a digit on both sides', $startOffset + strlen($matches[1]) + 1);
+						}
+						elseif ($matches[2][strlen($matches[2]) - 1] == '_') {
+							throw new Exception('Floats with underscores must have a digit on both sides', $startOffset + strlen($matches[1]) + strlen($matches[2]));
+						}
+	
+						$matches[2] = str_replace('_', '', $matches[2]);
+
+						$val = $val * pow(10, $matches[2]);
+					}
+				}
+				else {
+					$val = 1;
+					if (!empty($matches[3])) {
+						$val = intval($matches[3] . '1');
+					}
+
+					$matches[4] = strtoupper($matches[4]);
+					$val = $val * constant($matches[4]);
+				}
+
+				return $val;
+			}
+			elseif (preg_match(self::DATE_REGEX, $str, $matches)) {
+				unset($matches[0]);
+				$matches = array_values(array_filter($matches));
+				
+				$val = $matches[0];
+
+				if (!empty($matches[1])) {
+					$val .= ' ' . $matches[1];
+
+					if (!empty($matches[2])) {
+						$matches[2] = intval($matches[2]);
+						$val .= '-' . str_pad($matches[2], 2, '0', STR_PAD_LEFT) . ':00';
+					}
+				}
+
+				return $val;
+			}
+			elseif (preg_match(self::TIME_REGEX, $str, $matches)) {
+				return $matches[1];
+			}
+			else {
+				throw new Exception('', $startOffset);
+			}
+		}
+	}
+
+	private function readString() {
+		$token = $this->tokenGen->current();
+		$quoteType = $token['txt'];
+		$quoteLen = strlen($quoteType);
+		$startOffset = $token['offset'];
+		$escaping = false;
+		$str = '';
+		$basicString = $quoteType == '"' || $quoteType == "'";
+
+		$this->tokenGen->next();
+		while (true) {
+			if (!$this->tokenGen->valid()) {
+				throw new Exception('String not terminated', $startOffset);
+			}
+
+			$token = $this->tokenGen->current();
+
+			if ($basicString && $token['txt'] == "\n") {
+				throw new Exception("Basic and literal strings do not support newlines", $token['offset']);
+			}
+
+			if ($quoteType[0] == '"' && $token['type'] == '\\') {
+				$escaping = !$escaping;
+			}
+			else {
+				$escaping = false;
+			}
+
+			if (!$escaping && $token['txt'] == $quoteType) {
+				break;
+			}
+
+			$str .= $token['txt'];
+			$this->tokenGen->next();
+		}
+		$this->tokenGen->next();
+
+		if ($quoteLen === 3 && $str[0] == "\n") {
+			$str = substr($str, 1);
+		}
+
+		if ($quoteType == '"' || $quoteType == '"""') {
+			// process escaped characters
+			if (preg_match_all(self::STRING_ESCAPES, $str, $matches, PREG_OFFSET_CAPTURE)) {
+				$newStr = '';
+				$lastStrNdx = 0;
+
+				foreach ($matches[0] as $ndx => $fullMatch) {
+					$newStr .= substr($str, $lastStrNdx, $fullMatch[1] - $lastStrNdx);
+
+					switch ($matches[2][$ndx][0][0]) {
+						case 't':
+							$newStr .= "\t";
+							break;
+						case 'n':
+							if ($quoteLen == 3) {
+								throw new Exception('Multiline strings should not contain escaped newlines', $startOffset + $quoteLen + $fullMatch[1]);
+							}
+							$newStr .= "\n";
+							break;
+						case 'f':
+							$newStr .= "\f";
+							break;
+						case 'r':
+							$newStr .= "\r";
+							break;
+						case '"':
+							$newStr .= "\"";
+							break;
+						case '\'':
+							throw new Exception('Escaped single quotes are not allowed', $startOffset + $quoteLen + $fullMatch[1]);
+						case '\\':
+							$newStr .= "\\";
+							break;
+						case "\n":
+							break;
+						case 'u':
+							$unicode = substr($matches[2][$ndx][0], 1);
+							if (strlen($unicode) == 8) {
+								throw new Exception('8 character unicode sequences are not currently supported', $startOffset + $quoteLen + $fullMatch[1]);
+							}
+							$newStr .= mb_convert_encoding("&#x{$unicode};", 'UTF-8', 'HTML-ENTITIES');
+							break;
+						default:
+							throw new Exception('Unexpected escape sequence', $startOffset + $quoteLen + $fullMatch[1]);
+					}
+
+					$lastStrNdx = $fullMatch[1] + strlen($fullMatch[0]);
+				}
+
+				$str = $newStr . substr($str, $lastStrNdx);
+			}
+		}
+
+		return $str;
+	}
+
+	private function readInlineTable() {
+		$data = [];
+
+		$this->tokenGen->next();
+		while ($this->tokenGen->valid()) {
+			$token = $this->tokenGen->current();
+
+			if ($token['txt'] == '}') {
+				$this->tokenGen->next();
+				return $data;
+			}
+			elseif ($token['txt'] == ',') {
+				$this->tokenGen->next();
+			}
+
+			$key = $this->readPath();
+			$token = $this->tokenGen->current();
+			if ($token['txt'] != '=') {
+				throw new Exception();
+			}
+			$this->tokenGen->next();
+			$value = $this->readValue();
+
+			$this->setKeyValueWithPath($data, $key, $value);
+		}
+
+		throw new Exception();
+	}
+
+	private function readArray() {
+		$data = [];
+		$type = null;
+
+		$this->tokenGen->next();
+		while ($this->tokenGen->valid()) {
+			$token = $this->tokenGen->current();
+
+			if ($token['txt'] == "\n" || $token['txt'] == ',') {
+				$this->tokenGen->next();
+				continue;
+			}
+			elseif ($token['txt'] == ']') {
+				$this->tokenGen->next();
+				return $data;
+			}
+
+			$token = $this->tokenGen->current();
+			$value = $this->readValue();
+			if (is_null($type)) {
+				$type = gettype($value);
+			}
+			elseif ($type != gettype($value)) {
+				throw new Exception("Array of type {$type} cannot contain data of type " . gettype($value), $token['offset']);
+			}
+
+			$data[] = $value;
+		}
+
+		throw new Exception();
+	}
+
+	/* Helpers */
+
+	private function tokenizeToml($toml) {
+		$len = strlen($toml);
+		
+		$lastCharType = false;
+		$token = false;
+		$quoteType = false;
+		$escaping = false;
+		$readingComment = false;
+
+		for ($i = 0; true; $i++) {
+			if ($i == $len) {
+				if ($token !== false && !$readingComment && ($quoteType || $token['type'] != ' ')) {
+					yield $token;
+				}
+
+				break;
+			}
+
+			$char = $toml[$i];
+			$type = $this->getCharacterType($char);
+
+			if (!$type || $type != $lastCharType) {
+				if ($token) {
+					if ($token['type'] == '\\' && $quoteType && $quoteType[0] == '"') {
+						$escaping = !$escaping;
+					}
+					elseif (($token['type'] == '"' || $token['type'] == "'" ) && !$escaping) {
+						if ($quoteType) {
+							if ($quoteType == $token['txt']) {
+								$quoteType = false;
+							}
+						}
+						else {
+							$quoteType = $token['txt'];
+						}
+					}
+					else {
+						$escaping = false;
+					}
+
+					if (!$quoteType && $token['txt'] == '#') {
+						$readingComment = true;
+					}
+					elseif ($readingComment && $token['txt'] == "\n") {
+						$readingComment = false;
+					}
+
+					if (!$readingComment && ($quoteType || $token['type'] != ' ')) {
+						yield $token;
+					}
+				}
+
+				$token = [
+					'txt' => $char,
+					'type' => $type,
+					'offset' => $i
+				];
+
+				$lastCharType = $type;
+			}
+			else {
+				$token['txt'] .= $char;
+			}
+		}
+	}
+
+	private function getCharacterType($char) {
+		$ord = ord($char);
+
+		if ($ord >= 48 && $ord <= 57) {
+			return 'd';
+		}
+		else if (($ord >= 97 && $ord <= 122) || ($ord >= 65 && $ord <= 90)) {
+			return 'l';
+		}
+		else if ($ord == 32 || $ord == 9) {
+			return ' ';
+		}
+		else {
+			switch ($char) {
+				case '"':
+				case "'":
+				case '[':
+				case ']':
+					return $char;
+				
+				default:
+					return false;
+			}
+		}
+	}
+
+	private function setKeyValueWithPath(&$data, $path, $value) {
+		// Todo track set values better
+
+		$bak = &$data;
+		$lastNdx = count($path) - 1;
+
+		foreach ($path as $ndx => $key) {
+			if ($ndx == $lastNdx) {
+				if (isset($data[$key])) {
+					$fullPath = implode('.', array_map(function($item) {
+						return '"' . $item . '"';
+					}, array_slice($path, 0, $ndx + 1)));
+					throw new Exception("Cannot redefine key {$fullPath}", -1);
+				}
+				else {
+					$data[$key] = $value;
+				}
+			}
+			else {
+				if (!isset($data[$key])) {
+					$data[$key] = [];
+				}
+				elseif (!is_array($data[$key])) {
+					$fullPath = implode('.', array_map(function($item) {
+						return '"' . $item . '"';
+					}, array_slice($path, 0, $ndx + 1)));
+					throw new Exception("Cannot redefine key {$fullPath}", -1);
+				}
+
+				unset($data);
+				$data = &$bak[$key];
+				unset($bak);
+				$bak = &$data;
+			}
+		}
+	}
+
+	private function getValueWithPath(&$data, $path) {
+		$bak = &$data;
+		$lastNdx = count($path) - 1;
+
+		foreach ($path as $ndx => $key) {
+			if ($ndx == $lastNdx) {
+				if (isset($data[$key])) {
+					return $data[$key];
+				}
+				else {
+					return null;
+				}
+			}
+			else {
+				if (!isset($data[$key]) || !is_array($data[$key])) {
+					return null;
+				}
+
+				unset($data);
+				$data = &$bak[$key];
+				unset($bak);
+				$bak = &$data;
+			}
+		}
+	}
+
+	private static function dataToToml($input, $path = '', $depth = 0) {
+		switch (gettype($input)) {
+			case 'NULL':
+				return ['', false];
+			case 'boolean':
+				return [$input ? 'true' : 'false', false];
+			case 'integer':
+			case 'double':
+				return [strval($input), false];
+			case 'string':
+				if (ctype_print($input)) {
+					return ["'{$input}'", false];
+				}
+				else {
+					$input = '"' . str_replace(
+						[
+							"\\",
+							"\n",
+							"\t"
+						],
+						[
+							"\\\\",
+							"\\n",
+							"\\t"
+						],
+						$input
+					) . '"';
+					return [$input, false];
+				}
+			case 'object':
+				throw new Exception('TOML cannot be used to serialize objects');
+		}
+
+		// Array types
+
+		$isSimpleArray = false;
+		$isArrayOfTables = false;
+		$isSimpleTable = false;
+
+		if (count($input) == 0) {
+			$isSimpleArray = true;
+		}
+		elseif (array_keys($input) === range(0, count($input) - 1)) {
+			$rootType = null;
+			foreach ($input as $k => $v) {
+				$type = gettype($v);
+
+				if (is_null($rootType)) {
+					$rootType = $type;
+				}
+				elseif ($rootType != $type) {
+					$rootType = null;
+					break;
+				}
+			}
+
+			if (is_null($rootType)) {
+				$isSimpleTable = true;
+			}
+			elseif ($rootType == 'array') {
+				$isArrayOfTables = true;
+			}
+			else {
+				$isSimpleArray = true;
+			}
+		}
+		else {
+			$isSimpleTable = true;
+		}
+
+		$toml = '';
+
+		if ($isSimpleArray) {
+			foreach ($input as $key => $val) {
+				if ($toml) {
+					$toml .= ', ';
+				}
+				list($valueToml) = self::dataToToml($val, $path);
+				$toml .= $valueToml;
+			}
+
+			$toml = "[{$toml}]";
+			return [$toml, false];
+		}
+		
+		$cleanPath = preg_replace('/\\.?__\\|\\d+\\|__/', '', $path);
+		$hadSubKeys = false;
+		$indent = str_repeat('  ', $depth);
+		$subTableToml = '';
+		
+		if ($isArrayOfTables) {
+			foreach ($input as $key => $val) {
+				$toml .= "\n\n{$indent}[[{$cleanPath}]]";
+
+				foreach ($val as $k => $v) {
+					if (!ctype_alnum($k)) {
+						$k = "\"{$k}\"";
+					}
+
+					$childPath = "{$k}";
+					if ($cleanPath) {
+						$childPath = "{$cleanPath}.__|{$key}|__.{$childPath}";
+					}
+					list($valueToml, $valueIsTable) = self::dataToToml($v, $childPath, $depth + 1);
+
+					if ($valueIsTable) {
+						$subTableToml .= "{$valueToml}";
+					}
+					elseif ($valueToml != '') {
+						$toml .= "\n{$indent}  " . $k . ' = ' . $valueToml;
+					}
+				}
+
+				if ($subTableToml) {
+					$toml = "{$toml}{$subTableToml}";
+				}
+			}
+		}
+		else {
+			foreach ($input as $key => $val) {
+				if (!ctype_alnum($key)) {
+					$key = "\"{$key}\"";
+				}
+
+				$childPath = $key;
+				if ($cleanPath) {
+					$childPath = "{$cleanPath}.{$childPath}";
+				}
+
+				list($valueToml, $valueIsTable) = self::dataToToml($val, $childPath, $depth);
+
+				if ($valueIsTable) {
+					$subTableToml .= "{$valueToml}";
+				}
+				elseif ($valueToml != '') {
+					$toml .= "\n{$indent}" . $key . ' = ' . $valueToml;
+					$hadSubKeys = true;
+				}
+			}
+
+			if ($cleanPath && $hadSubKeys) {
+				$toml = "\n\n{$indent}[{$cleanPath}]{$toml}";
+			}
+
+			if ($subTableToml) {
+				$toml = "{$toml}{$subTableToml}";
+			}
+		}
+
+		if ($path) {
+			return [$toml, true];
+		}
+		else {
+			return trim($toml);
+		}
+	}
+
+	/* Static Methods */
+
+	public static function parse(string $toml) {
+	$lines=array();
     $counter=0;
-    foreach (explode("\n", $inputToml) as $line) {
+    foreach (explode("\n", $toml) as $line) {
         $line=ltrim($line);
         if ($line[0] == '#') continue;
+		if (strpos($line, '""') !==false) continue;
+		if (strpos($line, "''''''") !==false) continue;
         $lines[$counter]=$line;
         $counter++;
     }
-    // form back into inputToml
     $fileContents=implode("\n", $lines);
-
-    // break inputToml into blocks by scope
-    $fileArray = explode("[[", $fileContents);
-    $counter=0;
-    foreach ($fileArray as $fileElement) {
-        if ($counter > 0) {
-               $fileArray[$counter]='[['.$fileElement;
-           }
-           $counter++;
-       }
-    return $fileArray;
-}
-function p2($inputArray) {
-    // breaks each block line into array of lines, remove empty elements
-    $lines=array();
-    $cc=0;
-    //print_r($inputArray);
-    foreach ($inputArray as $block) {
-        $block=ltrim($block);
-        // if (empty($block)) {
-            // unset ($inputArray[$cc]);
-            // continue;
-        // }
-        $tmp=explode("\n", $block);
-        $c=0;
-        foreach ($tmp as $line) {
-            $line=ltrim($line);
-            if (empty($line)) {
-                unset($tmp[$c]);
-                $tmp=array_values($tmp);
-                continue;
-            }
-            $tmp[$c]=$line;
-            $c=$c+1;
-         }
-         array_push($lines, $tmp);
-         $cc=$cc+1;
+	$lines2=array();
+    $counter2=0;
+    foreach (explode("\n", $fileContents) as $line) {
+        $line=ltrim($line);
+        if (empty($line[0])) continue;
+        $lines2[$counter2]=$line;
+        $counter2++;
     }
+    $correctData=implode("\n", $lines2);
+	//file_put_contents('filename2.txt', print_r($correctData, true));
+		$obj = new self($correctData);
+		return $obj->data;
+	}
+	
+	public static function parseFile(string $path) {
+		$toml = file_get_contents($path);
+		return self::parse($toml);
+	}
 
-    return $lines;
+	public static function toToml(array $input) {
+		if (!count($input)) {
+			return '';
+		}
+		
+		return self::dataToToml($input);
+	}
+
+	public const INT_REGEX = '/^(0x)([0-9A-F_]+)$|^(0o)([0-7_]+)$|^(0b)([01_]+)$|^([+-]?[0-9_]+)$/i';
+	public const FLOAT_REGEX = '/^([+-]?[0-9_]+(?:\\.[0-9_]+)?)(?:e([+-]?[0-9_]+))?$|^([+-])?(inf|nan)$/i';
+	public const DATE_REGEX = '/^(\\d{4}-\\d{2}-\\d{2})(?:T?(\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?))?(?:Z(\\d{1,2})?|-(\\d{2}):\\d{2})?$/';
+	public const TIME_REGEX = '/^(\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?)$/';
+	public const VALUE_TERMINATORS = "\n,}]";
+	public const STRING_ESCAPES = '/(\\\\)([tnfr"\'\\\\]|u[0-9A-F]{8}|u[0-9A-F]{4}|\n\\s*)/';
 }
-function p3($inputArray) { 
-    // set the block array key to the first row of the block, if it has a scope value ('[[')
-    $c=0;
-    //print_r($inputArray);
-    foreach ($inputArray as $lineBlock) {
-        if (substr($lineBlock[0], 0, 2) == '[[') {
-            unset($inputArray[$c][0]);
-            $inputArray[trim(trim(trim(explode('#', $lineBlock[0])[0], ' '), ']]'),'[[')] = $inputArray[$c];
-            unset($inputArray[$c]);
-        }
-        $c++;
-    }
-    return $inputArray;
-}
-
-function p4($inputArray) {
-    // break each row/line element of each block array into left and right values.
-    // these values are then stored as key $right => value $left.
-    $keys=array_keys($inputArray);
-    $c=0;
-    foreach ($inputArray as $block) {
-        $keys2=array_keys($block);
-        $c2=0;
-        foreach ($block as $row) {
-            $rowArray=explode('=', $row);
-            if (count($rowArray) == 1) { // just push if no key
-                array_push($inputArray[$keys[$c]], $rowArray[0]);
-                unset($inputArray[$keys[$c]][$keys2[$c2]]);
-            } else { // assign value to key
-                $left=$rowArray[0];
-                $right=end($rowArray);
-                $left=explode('#', $left)[0];
-                $right=explode('#', $right)[0];
-                $left=trim(trim(str_replace("\t", ' ', $left), ' '), '"');
-                $right=trim(trim(str_replace("\t", ' ', $right), ' '), '"');
-                unset($inputArray[$keys[$c]][$keys2[$c2]]);
-                if (ctype_alpha($left)) {
-                    // while we already did remove commented lines, and exploded by comment, some new rows/lines MAY still have a comment in them.
-                    if ($row[0] == '#') continue;
-                    if ($left[0] == '#' || $right[0] == '#') continue;
-                    $inputArray[$keys[$c]][$left]=$right;
-                }
-            }
-
-            $c2++;
-        }
-        $c++;
-    }
-    return $inputArray;
-}
-
-function p5($inputArray) {
-    // handle multiline comments ''' or """..?
-    //print_r($inputArray);
-    $continuous='';
-    $continuousCount=0;
-    $continuousKey='';
-
-    $keySet=array_keys($inputArray);
-    $counter=0;
-    foreach ($inputArray as $block) {
-        $blockKeySet=array_keys($block);
-        $counter2=0;
-
-        //print_r($block);
-        foreach ($block as $row) {
-            if (substr($row, 0, 3) == '"""' || substr($row, 0, 3) == "'''") {
-                if ($continuousCount==0) { // multi-line begin
-                    //echo "BEGIN: ".$row."\n";
-                    $continuousCount=1;
-                    $continuousKey=$counter2;
-                    unset ($inputArray[$keySet[$counter]][$blockKeySet[$counter2]]);
-                } elseif ($continuousCount==1) { // multi-line end
-                    //echo "END: ".$row."\n";
-                    $continuousCount=0;
-                    $inputArray[$keySet[$counter]][$blockKeySet[$continuousKey]]=$continuous;
-                    unset ($inputArray[$keySet[$counter]][$blockKeySet[$counter2]]);
-                }
-            } elseif ($continuousCount == 1) { // append multi-line
-                $continuous=$continuous.$row."\n";
-                unset ($inputArray[$keySet[$counter]][$blockKeySet[$counter2]]);
-                //echo "APPEND: ".$continuous."\n";
-            }
-            $counter2++;
-        }
-
-        $counter++;
-    }
-    //echo "\n\n";
-    //print_r($newArray);
-    return $inputArray;
-}
-
-function parseToml($tomlData) {
-    // one large call to all the functions.
-    $tomlData=str_replace("\r", '', $tomlData);
-    //error_log(json_encode($tomlData, JSON_PRETTY_PRINT));
-    return p5(p4(p3(p2(p1($tomlData)))));
-}
-
-// test.toml is a mods.toml pulled from a mod.jar/META-INF.
-// parseToml is called with toml file data as an argument..
-// if ($_GET['a']=='test') {
-    // header('content-type: application/json');
-    // echo json_encode(parseToml(file_get_contents('../test.toml')), JSON_UNESCAPED_SLASHES);
-// }
-
-?>

@@ -10,13 +10,13 @@ if (substr($_SESSION['perms'],3,1)!=="1") {
 }
 $config = require("config.php");
 require("dbconnect.php");
+require("toml.php");
 $fileName = $_FILES["fiels"]["name"];
 $fileJarInTmpLocation = $_FILES["fiels"]["tmp_name"];
 if (!$fileJarInTmpLocation) {
     echo '{"status":"error","message":"File is too big! Check your post_max_size (current value '.ini_get('post_max_size').') andupload_max_filesize (current value '.ini_get('upload_max_filesize').') values in '.php_ini_loaded_file().'"}';
     exit();
 }
-include('toml.php');
 function slugify($text) {
   $text = preg_replace('~[^\pL\d]+~u', '-', $text);
   //$text = iconv('utf-8', 'us-ascii//TRANSLIT', $text);
@@ -87,7 +87,7 @@ function processFile($zipExists, $md5) {
         }
     } else { # is 1.14+ mod
         $legacy=false;
-        $mcmod = parseToml($result);
+        $mcmod = Toml::parse($result);
         //error_log(json_encode($mcmod, JSON_PRETTY_PRINT));
         if (!$mcmod['mods']['modId']||!$mcmod['mods']['displayName']||!$mcmod['mods']['description']||!$mcmod['mods']['version']||!$mcmod['mods']['displayURL']||!($mcmod['mods']['author'] && $mcmod['mods']['authors'])) {
             $warn['b'] = true;
@@ -130,33 +130,46 @@ function processFile($zipExists, $md5) {
         $version = $mcmod['version'];
         $mcversion = $mcmod['mcversion'];
     } else {
-        if (!$mcmod['mods']['displayName']) {
+        if (!$mcmod['mods'][0]['displayName']) {
             $pretty_name = mysqli_real_escape_string($conn, $fileNameShort);
         } else {
-            $pretty_name = mysqli_real_escape_string($conn, $mcmod['mods']['displayName']);
+            $pretty_name = mysqli_real_escape_string($conn, $mcmod['mods'][0]['displayName']);
         }
-        if (!$mcmod['mods']['modId']) {
+        if (!$mcmod['mods'][0]['modId']) {
             $name = slugify($pretty_name);
         } else {
             if (preg_match("^[a-z0-9]+(?:-[a-z0-9]+)*$", $mcmod['mods']['modId'])) {
-                $name = $mcmod['mods']['modId'];
+                $name = $mcmod['mods'][0]['modId'];
             } else {
-                $name = slugify($mcmod['mods']['modId']);
+                $name = slugify($mcmod['mods'][0]['modId']);
             }
         }
         $link = empty($mcmod['mods']['displayURL'])? $mcmod[0]['displayURL'] : $mcmod['mods']['displayURL'];
-        $authorRoot=empty($mcmod[0]['authors'])? $mcmod[0]['author'] : $mcmod[0]['authors'];
-        $authorMods=empty($mcmod['mods']['authors'])? $mcmod['mods']['author'] : $mcmod['mods']['authors'];
+        $authorRoot=empty($mcmod['authors'])? $mcmod['author'] : $mcmod['authors'];
+        $authorMods=empty($mcmod['mods'][0]['authors'])? $mcmod['mods'][0]['author'] : $mcmod['mods'][0]['authors'];
         $author = mysqli_real_escape_string($conn, empty($authorRoot)? $authorMods : $authorRoot);
-        $description = mysqli_real_escape_string($conn, $mcmod['mods']['description']);
-        $mcversion=$mcmod['dependencies.'.$mcmod['mods']['modId']]['versionRange'];
+        $description = mysqli_real_escape_string($conn, $mcmod['mods'][0]['description']);
+		$i = 0;
+		//check for the minecraft dependency in the toml, if it's not found, use the first version range (forge)
+		while($mcmod['dependencies'][$mcmod['mods'][0]['modId']][$i]['modId'] != 'minecraft') {
+		$i++;
+		if ($mcmod['dependencies'][$mcmod['mods'][0]['modId']][$i]['modId'] == null) break;
+		}
+		if ($mcmod['dependencies'][$mcmod['mods'][0]['modId']][$i]['modId'] == null) {
+		$tmpver = array();
+		preg_match('/(^.*?)(1[.|-][1-9]+)/', $fileName, $tmpver);
+		$mcversion = str_replace("-", ".", $tmpver[2]);
+		} else {
+		$mcversion = $mcmod['dependencies'][$mcmod['mods'][0]['modId']][$i]['versionRange'];
+		}
+		//file_put_contents('filename.txt', print_r($mcmod, true));
         // let the user fill in if not absolutely certain.
         /* if (empty($mcversion)) { //if there is no dependency specified, get from filename
             // THIS SHOULD NEVER BE NECESSARY, BUT SOME MODS (OptiFine) DON'T HAVE A MINECRAFT DEPENDENCY LISTED
             $divideDash=explode('-', $fileNameShort);
             $mcversion=$divideDash[1].'.'.$divideDash[2]; // we get modname-1-16-5-1-1-1.jar. we don't know if it is 1-16 or 1-16-5, so it's safer to assume 1-16
         } */
-        $version = $mcmod['mods']['version'];
+        $version = $mcmod['mods'][0]['version'];
         if ($version == "\${file.jarVersion}" ) {
             $tmpFilename=explode('-', $fileNameShort);
             array_shift($tmpFilename);

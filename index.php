@@ -1877,6 +1877,10 @@ if (!isset($_SESSION['user'])&&!uri("/login")) {
                             </thead>
                             <tbody>
                                 <?php
+								$tmpmc = array();
+								preg_match('/(^.*?)(1[.|-][1-9]+)/', $user['minecraft'], $tmpmc);
+								$newmcver = str_replace("-", ".", $tmpmc[2]);
+                                $modsluglist = Array();
                                 $modsluglist = Array();
                                 foreach($modslist as $bmod) {
                                     if ($bmod) {
@@ -1886,83 +1890,8 @@ if (!isset($_SESSION['user'])&&!uri("/login")) {
                                         if ($_SESSION['showall']) {
                                             $modvq = mysqli_query($conn,"SELECT `version`,`id` FROM `mods` WHERE `name` = '".$moda['name']."'");
                                         } else {
-                                            $modvq = mysqli_query($conn,"SELECT `version`,`id` FROM `mods` WHERE `name` = '".$moda['name']."' AND (`mcversion` = '".$user['minecraft']."' OR `id` = ".$bmod.")");
+                                            $modvq = mysqli_query($conn,"SELECT `version`,`id` FROM `mods` WHERE `name` = '".$moda['name']."' AND (`mcversion` LIKE '%".$newmcver."%' OR `id` = ".$bmod.")");
                                         }
-
-                                        // VERSION COMPARISON BLOCK //
-                                        $versionMismatch = false; // THIS SHOULD BE REFERENCED TO DETERMINE MISMATCH!
-                                        $versionNotEqual = false;
-                                        $versionNotInRange = false;
-                                        if ($moda['type']=="mod") {
-                                            $gt = false;
-                                            $gte = false;
-                                            $lt = false;
-                                            $lte = false;
-                                            if (empty($moda['mcversion'])) {
-                                            } else {
-                                                $mcversionArray = explode(',', str_replace(' ', '', $moda['mcversion']));
-                                                if (count($mcversionArray) == 1) {
-                                                    if (str_replace('(', '', str_replace('[', '', str_replace(')', '', str_replace(']', '', $moda['mcversion'])))) !== $user['minecraft']) {
-                                                        $versionNotEqual = true;
-                                                    }
-                                                } else {
-                                                    $firstVersion = $mcversionArray[0];
-                                                    $lastVersion = end($mcversionArray);
-                                                    $userVersion = $user['minecraft'];
-
-                                                    if ($firstVersion[0] == "(") {
-                                                        $firstVersion = substr($firstVersion, 1);
-                                                        if (empty($firstVersion)) {
-                                                            $firstVersion='0.0.0';
-                                                        }
-
-                                                        if (version_compare($userVersion, $firstVersion, '>')) {
-                                                            //error_log($userVersion.' > '.$firstVersion);
-                                                            $gt = true;
-                                                        }
-                                                    } else { // inclusive, [ or ''.
-                                                        if ($firstVersion[0] == "[") {
-                                                            $firstVersion = substr($firstVersion, 1);
-                                                        }
-                                                        if (empty($firstVersion)) {
-                                                            $firstVersion='0.0.0';
-                                                        }
-                                                        if (version_compare($userVersion, $firstVersion, '>=')) {
-                                                            //error_log($userVersion.' >= '.$firstVersion);
-                                                            $gte = true;
-                                                        }
-                                                    }
-                                                    if (substr($lastVersion, -1) == ")") {
-                                                        $lastVersion = substr($lastVersion, 0, -1);
-                                                        if (empty($lastVersion)) {
-                                                            $lastVersion='99.99.99';
-                                                        }
-                                                        if (version_compare($userVersion, $lastVersion, '<')) {
-                                                            //error_log($userVersion.' < '.$lastVersion);
-                                                            $lt = true;
-                                                        }
-                                                    } else {  // inclusive, ] or ''.
-                                                        if (substr($lastVersion, -1) == "]") {
-                                                            $lastVersion = substr($lastVersion, 0, -1);
-                                                        }
-                                                        if (empty($lastVersion)) {
-                                                            $lastVersion='99.99.99';
-                                                        }
-                                                        if (version_compare($userVersion, $lastVersion, '<=')) {
-                                                            //error_log($userVersion.' <= '.$lastVersion);
-                                                            $lte = true;
-                                                        }
-                                                    }
-                                                    if (!(($gt || $gte) && ($lt || $lte))) {
-                                                        $versionNotInRange = true;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        if ($versionNotEqual || $versionNotInRange) {
-                                            $versionMismatch = true;
-                                        }
-                                        // END VERSION COMPARISON BLOCK //
 
                                         ?>
 
@@ -2057,7 +1986,7 @@ if (!isset($_SESSION['user'])&&!uri("/login")) {
                             if ($_SESSION['showall']) {
                                 $mres = mysqli_query($conn, "SELECT * FROM `mods` WHERE `type` = 'mod'");
                             } else {
-                                $mres = mysqli_query($conn, "SELECT * FROM `mods` WHERE `type` = 'mod' AND `mcversion` = '".$user['minecraft']."'");
+                                $mres = mysqli_query($conn, "SELECT * FROM `mods` WHERE `type` = 'mod' AND `mcversion` LIKE '%".$newmcver."%'");
                             }
 
                             if (mysqli_num_rows($mres)!==0) {
@@ -2132,7 +2061,7 @@ if (!isset($_SESSION['user'])&&!uri("/login")) {
                                         if ($_SESSION['showall']) {
                                             $modversionsq = mysqli_query($conn, "SELECT `id`,`version` FROM `mods` WHERE `type` = 'mod' AND `name` = '".$mod['name']."' ORDER BY `version` DESC");
                                         } else {
-                                            $modversionsq = mysqli_query($conn, "SELECT `id`,`version` FROM `mods` WHERE `type` = 'mod' AND `name` = '".$mod['name']."' AND `mcversion` = '".$user['minecraft']."' ORDER BY `version` DESC");
+                                            $modversionsq = mysqli_query($conn, "SELECT `id`,`version` FROM `mods` WHERE `type` = 'mod' AND `name` = '".$mod['name']."' AND `mcversion` LIKE '%".$newmcver."%' ORDER BY `version` DESC");
                                         }
 
                                         $modversions = array();
