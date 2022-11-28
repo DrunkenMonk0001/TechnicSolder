@@ -73,8 +73,7 @@ while($row = mysqli_fetch_array($res)) {
         $public = 1;
     } else {
         $public = 0;
-    }
-    mysqli_query($conn, "INSERT INTO `builds` (`modpack`,`name`,`public`,`minecraft`,`java`,`memory`) VALUES ('".$row['modpack_id']."','".$row['version']."',".$public.",'".$row['minecraft']."','".$row['min_java']."','".$row['min_memory']."')");
+        mysqli_query($conn, "INSERT INTO `builds` (`modpack`,`name`,`public`,`minecraft`,`java`,`memory`) VALUES ('".$row['modpack_id']."','".$row['version']."',".$public.",'".$row['minecraft']."','".$row['min_java']."','".$row['min_memory']."')");
 }
 // ----- CLIENTS ----- \\
 $res = mysqli_query($oemsolder, "SELECT `name`,`uuid` FROM `clients`");
@@ -241,7 +240,7 @@ while($row = mysqli_fetch_array($res)) {
     $ma = mysqli_fetch_array($mres);
     $ml = explode(',', $ma['modversion_id']);
     if (count($ml)>0) {
-        array_push($mods, implode(',',$ml));
+        array_push($mods, implode(',', $ml));
     }
     array_push($mods, $row['release_id']);
     mysqli_query($conn, "UPDATE `builds` SET `mods` = '". implode(',',$mods)."' WHERE `modpack` = '".$row['id']."'");
